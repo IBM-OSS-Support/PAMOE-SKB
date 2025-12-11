@@ -1,0 +1,239 @@
+services:
+  bamoe_canvas:
+    image: quay.io/bamoe/canvas:9.3.0-ibm-0007
+    container_name: bamoe_canvas
+    platform: linux/amd64
+    ports:
+      - "9090:8080"
+    depends_on:
+      - bamoe_cors_proxy
+      - bamoe_extended_services
+    volumes:
+      - ./repos:/git
+      - ./settings.xml:/home/kie/.m2/settings.xml:ro
+    environment:
+      - KIE_SANDBOX_EXTENDED_SERVICES_URL=http://localhost:21345
+      - KIE_SANDBOX_CORS_PROXY_URL=http://localhost:7081
+    networks:
+      - bamoe-net
+
+  bamoe_management_console:
+    image: quay.io/bamoe/management-console:9.3.0-ibm-0007
+    container_name: bamoe_management_console
+    platform: linux/amd64
+    ports: ["9191:8080"]
+    volumes:
+      - ./repos:/git
+    networks: [bamoe-net]
+
+  bamoe_cors_proxy:
+    image: quay.io/bamoe/cors-proxy:9.3.0-ibm-0007
+    container_name: bamoe_cors_proxy
+    platform: linux/amd64
+    ports: ["7081:8080"]
+    networks: [bamoe-net]
+
+  bamoe_maven_repository:
+    image: quay.io/bamoe/maven-repository:9.3.0-ibm-0007
+    container_name: bamoe_maven_repository
+    platform: linux/amd64
+    ports: ["10099:8080"]
+    networks: [bamoe-net]
+
+  bamoe_extended_services:
+    image: quay.io/bamoe/extended-services:9.3.0-ibm-0007
+    environment:
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://postgres:5432/pamoeskb
+      - QUARKUS_DATASOURCE_USERNAME=postgres
+      - QUARKUS_DATASOURCE_PASSWORD=postgres
+    container_name: bamoe_extended_services
+    platform: linux/amd64
+    ports: ["21345:21345"]
+    networks: [bamoe-net]
+    depends_on:
+      postgres_init:
+        condition: service_completed_successfully
+
+  workflows:
+    image: quay.io/pamoeskb/automated-workflows:pamoeskb-release1
+    container_name: workflows
+    volumes:
+      - ./repos:/export                 # where aggregated workflows + initdb end up
+      - ./dbinit:/initdb:ro             # optional extra host SQL files
+    command: >
+      sh -c "
+        set -e;
+        echo 'Copying automation workflows to /export...';
+        cp -R /opt/pamoe/automated-workflows/* /export/;
+
+        echo 'Cleaning /export/initdb...';
+        rm -rf /export/initdb;
+        mkdir -p /export/initdb;
+
+        echo 'Copying SQL init scripts from image (including 00_schema.sql, skipping Flyway runtime schema, avoiding duplicates)...';
+        for f in /opt/pamoe/automated-workflows/*/initdb/*.sql; do
+          if [ -f \"$$f\" ]; then
+            base=$$(basename \"$$f\");
+
+            # Skip only the Flyway-managed runtime schema script to avoid conflicts
+            case \"$$base\" in
+              003_correlation_instances.sql)
+                echo \"Skipping Flyway runtime schema script $$f (managed by BAMOE/Quarkus Flyway)\";
+                continue;
+                ;;
+            esac
+
+            # Avoid duplicate filenames from multiple workflows
+            if [ -f \"/export/initdb/$$base\" ]; then
+              echo \"Init script $$base already exists in /export/initdb, skipping $$f\";
+              continue;
+            fi;
+
+            echo \"Copying $$f to /export/initdb/$$base\";
+            cp \"$$f\" \"/export/initdb/$$base\";
+          else
+            echo \"Skipping non-file $$f\";
+          fi;
+        done;
+
+        echo 'Copying extra SQL init scripts from /initdb (host dbinit)...';
+        if [ -d /initdb ]; then
+          for f in /initdb/*.sql; do
+            if [ -f \"$$f\" ]; then
+              base=$$(basename \"$$f\");
+              if [ -f \"/export/initdb/$$base\" ]; then
+                echo \"Extra init script $$base already exists in /export/initdb, skipping $$f\";
+                continue;
+              fi;
+              echo \"Copying extra init script $$f to /export/initdb/$$base\";
+              cp \"$$f\" \"/export/initdb/$$base\";
+            fi;
+          done;
+        fi;
+
+        echo 'Export done';
+      "
+    networks: [bamoe-net]
+
+  kafka:
+    image: quay.io/pamoeskb/kafka:latest
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT_INTERNAL://:29092,PLAINTEXT_EXTERNAL://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT_INTERNAL://kafka:29092,PLAINTEXT_EXTERNAL://host.docker.internal:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT_INTERNAL:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT_INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    networks:
+      - bamoe-net
+
+  mailpit:
+    image: quay.io/pamoeskb/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks: [bamoe-net]
+
+  postgres:
+    image: quay.io/pamoeskb/postgres:latest
+    container_name: pg-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pamoeskb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      LANG: en_US.utf8
+      LC_ALL: en_US.utf8
+    depends_on:
+      workflows:
+        condition: service_completed_successfully
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - bamoe-net
+
+  postgres_init:
+    image: quay.io/pamoeskb/postgres:latest
+    container_name: pg-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: pamoeskb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./repos/initdb:/initdb:ro
+    networks:
+      - bamoe-net
+    entrypoint: >
+      sh -c '
+        set -e
+        echo "SQL files in /initdb:"
+        ls -l /initdb || echo "No initdb scripts found"
+
+        if [ -f "/initdb/00_schema.sql" ]; then
+          echo "Running schema script first: /initdb/00_schema.sql"
+          PGPASSWORD="$$POSTGRES_PASSWORD" psql -v ON_ERROR_STOP=1 \
+            -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
+            -f "/initdb/00_schema.sql"
+        fi
+
+        for f in /initdb/*.sql; do
+          if [ ! -f "$$f" ]; then
+            continue
+          fi
+          if [ "$$f" = "/initdb/00_schema.sql" ]; then
+            continue
+          fi
+          echo "Running init script: $$f"
+          PGPASSWORD="$$POSTGRES_PASSWORD" psql -v ON_ERROR_STOP=1 \
+            -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
+            -f "$$f"
+        done
+
+        echo "Database init completed."
+      '
+
+  redis:
+    container_name: redis
+    image: quay.io/pamoeskb/redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [bamoe-net]
+
+networks:
+  bamoe-net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  redis-data:
+  repos:

@@ -1,0 +1,106 @@
+services:
+  # Setup service to create Docker-specific kubeconfig
+  setup-kubeconfig:
+    image: quay.io/pamoeskb/kubectl:latest
+    container_name: bamoe-kubeconfig-setup
+    volumes:
+      - ${HOME}/.kube:/root/.kube
+    environment:
+      - HOST_KUBECONFIG=${KUBECONFIG}
+      - HOST_HOME=${HOME}
+    entrypoint: ["/bin/bash"]
+    command:
+      - -c
+      - |
+        # Determine which kubeconfig file to use
+        # If HOST_KUBECONFIG is set, translate the path from host to container
+        if [ -n "$$HOST_KUBECONFIG" ]; then
+          # Replace host home directory with container home directory
+          SOURCE_CONFIG=$$(echo "$$HOST_KUBECONFIG" | sed "s|$$HOST_HOME|/root|g")
+          echo "KUBECONFIG environment variable detected"
+          echo "Host path: $$HOST_KUBECONFIG"
+          echo "Container path: $$SOURCE_CONFIG"
+        else
+          SOURCE_CONFIG="/root/.kube/config"
+          echo "Using default kubeconfig: $$SOURCE_CONFIG"
+        fi
+
+        if [ ! -f "$$SOURCE_CONFIG" ]; then
+          echo "ERROR: Kubernetes config not found at $$SOURCE_CONFIG"
+          echo 'Please ensure kubectl is configured before running docker-compose.'
+          exit 1
+        fi
+
+        echo 'Creating Docker-specific kubeconfig...'
+
+        # Get the current context from the source config
+        CURRENT_CONTEXT=$$(kubectl --kubeconfig="$$SOURCE_CONFIG" config current-context 2>/dev/null || echo "")
+
+        if [ -z "$$CURRENT_CONTEXT" ]; then
+          echo 'WARNING: No current context found in kubeconfig, using first available context'
+          CURRENT_CONTEXT=$$(kubectl --kubeconfig="$$SOURCE_CONFIG" config get-contexts -o name | head -n 1)
+        fi
+
+        echo "Current context: $$CURRENT_CONTEXT"
+
+        # Transform server URLs from localhost/127.0.0.1 to host.docker.internal
+        sed -e 's|https://127.0.0.1:|https://host.docker.internal:|g' \
+            -e 's|https://localhost:|https://host.docker.internal:|g' \
+            -e 's|http://127.0.0.1:|http://host.docker.internal:|g' \
+            -e 's|http://localhost:|http://host.docker.internal:|g' \
+            -e 's|https://0.0.0.0:|https://host.docker.internal:|g' \
+            -e 's|http://0.0.0.0:|http://host.docker.internal:|g' \
+            "$$SOURCE_CONFIG" > /root/.kube/config.docker
+
+        # Set the current context in the docker config to match the original
+        kubectl --kubeconfig=/root/.kube/config.docker config use-context "$$CURRENT_CONTEXT" 2>/dev/null || {
+          echo "WARNING: Could not set context to $$CURRENT_CONTEXT"
+        }
+
+        # Verify the configuration
+        echo '✓ Docker-specific kubeconfig created at ~/.kube/config.docker'
+        echo "Active context: $$(kubectl --kubeconfig=/root/.kube/config.docker config current-context)"
+        echo 'Transformed server URL:'
+        kubectl --kubeconfig=/root/.kube/config.docker config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+        echo ""
+
+  # Ollama LLM Service with pre-loaded granite3.3:8b model
+  ollama:
+    image: quay.io/pamoeskb/ollama:latest
+    container_name: bamoe-ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - bamoe-network
+    restart: unless-stopped
+
+  # BAMOE MCP Web Application
+  web-app:
+    image: quay.io/pamoeskb/bamoe-mcp-web-app:latest
+    container_name: bamoe-mcp-web-app
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=${PORT:-3000}
+      - BAMOE_HOST=host.docker.internal
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-granite3.3:8b}
+      - OLLAMA_BASE_URL=${OLLAMA_HOST:-http://ollama:11434}
+      - K8S_NAMESPACE=${K8S_NAMESPACE:-local-kie-sandbox-dev-deployments}
+      - IS_DOCKER=true
+    volumes:
+      - ${HOME}/.kube/config.docker:/root/.kube/config:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - bamoe-network
+    depends_on:
+      setup-kubeconfig:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  bamoe-network:
+    driver: bridge
