@@ -10,7 +10,6 @@ services:
       - bamoe_extended_services
     volumes:
       - ./repos:/git
-      - ./settings.xml:/home/kie/.m2/settings.xml:ro
     environment:
       - KIE_SANDBOX_EXTENDED_SERVICES_URL=http://localhost:21345
       - KIE_SANDBOX_CORS_PROXY_URL=http://localhost:7081
@@ -55,11 +54,10 @@ services:
         condition: service_completed_successfully
 
   workflows:
-    image: quay.io/pamoeskb/automated-workflows:pamoeskb-release1
+    image: quay.io/pamoeskb/automated-workflows:release1
     container_name: workflows
     volumes:
       - ./repos:/export                 # where aggregated workflows + initdb end up
-      - ./dbinit:/initdb:ro             # optional extra host SQL files
     command: >
       sh -c "
         set -e;
