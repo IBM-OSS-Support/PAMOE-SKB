@@ -1,6 +1,6 @@
 services:
   bamoe_canvas:
-    image: quay.io/bamoe/canvas:9.3.0-ibm-0007
+    image: quay.io/bamoe/canvas:9.4.1-ibm-0002
     container_name: bamoe_canvas
     platform: linux/amd64
     ports:
@@ -17,7 +17,7 @@ services:
       - bamoe-net
 
   bamoe_management_console:
-    image: quay.io/bamoe/management-console:9.3.0-ibm-0007
+    image: quay.io/bamoe/management-console:9.4.1-ibm-0002
     container_name: bamoe_management_console
     platform: linux/amd64
     ports: ["9191:8080"]
@@ -26,21 +26,21 @@ services:
     networks: [bamoe-net]
 
   bamoe_cors_proxy:
-    image: quay.io/bamoe/cors-proxy:9.3.0-ibm-0007
+    image: quay.io/bamoe/cors-proxy:9.4.1-ibm-0002
     container_name: bamoe_cors_proxy
     platform: linux/amd64
     ports: ["7081:8080"]
     networks: [bamoe-net]
 
   bamoe_maven_repository:
-    image: quay.io/bamoe/maven-repository:9.3.0-ibm-0007
+    image: quay.io/bamoe/maven-repository:9.4.1-ibm-0002
     container_name: bamoe_maven_repository
     platform: linux/amd64
     ports: ["10099:8080"]
     networks: [bamoe-net]
 
   bamoe_extended_services:
-    image: quay.io/bamoe/extended-services:9.3.0-ibm-0007
+    image: quay.io/bamoe/extended-services:9.4.1-ibm-0002
     environment:
       - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://postgres:5432/pamoeskb
       - QUARKUS_DATASOURCE_USERNAME=postgres
@@ -54,22 +54,42 @@ services:
         condition: service_completed_successfully
 
   workflows:
-    image: quay.io/pamoeskb/automated-workflows:release1
+    image: quay.io/pamoeskb/automated-workflows:release-9.4.1
     container_name: workflows
     volumes:
       - ./repos:/export                 # where aggregated workflows + initdb end up
+      - .:/swidtag:ro                   # mount parent directory to access swidtag file
+      - .:/local-workflows:ro           # mount local workflows for LICENSE updates
     command: >
       sh -c "
         set -e;
-        echo 'Copying automation workflows to /export...';
-        cp -R /opt/pamoe/automated-workflows/* /export/;
+        echo 'Copying automation workflows to /export (excluding target folders)...';
+        for workflow_dir in /automation-workflows/*; do
+          if [ -d \"$$workflow_dir\" ]; then
+            workflow_name=$$(basename \"$$workflow_dir\");
+            echo \"Copying $$workflow_name...\";
+            mkdir -p \"/export/$$workflow_name\";
+            for item in \"$$workflow_dir\"/*; do
+              base_item=$$(basename \"$$item\");
+              if [ -e \"$$item\" ] && [ \"$$base_item\" != 'target' ] && [[ \"$$base_item\" != *.swidtag ]] && [[ \"$$base_item\" != *.bak ]]; then
+                cp -R \"$$item\" \"/export/$$workflow_name/\";
+              fi;
+            done;
+          fi;
+        done;
+
+        echo 'Updating localhost to host.docker.internal in application.properties files...';
+        find /export -name 'application.properties' -type f -exec sed -i 's/localhost:5433/host.docker.internal:5433/g' {} +;
+        find /export -name 'application.properties' -type f -exec sed -i 's/localhost:9092/host.docker.internal:9092/g' {} +;
+        find /export -name 'application.properties' -type f -exec sed -i 's/localhost:6379/host.docker.internal:6379/g' {} +;
+        find /export -name 'application.properties' -type f -exec sed -i 's/quarkus.mailer.host=localhost/quarkus.mailer.host=host.docker.internal/g' {} +;
 
         echo 'Cleaning /export/initdb...';
         rm -rf /export/initdb;
         mkdir -p /export/initdb;
 
         echo 'Copying SQL init scripts from image (including 00_schema.sql, skipping Flyway runtime schema, avoiding duplicates)...';
-        for f in /opt/pamoe/automated-workflows/*/initdb/*.sql; do
+        for f in /automation-workflows/*/initdb/*.sql; do
           if [ -f \"$$f\" ]; then
             base=$$(basename \"$$f\");
 
@@ -109,12 +129,42 @@ services:
           done;
         fi;
 
+        echo 'Copying updated 9.4.1 swidtag file to /export and all workflow directories...';
+        if [ -f /swidtag/ibm.com_IBM_Process_Automation_Manager_Open_Edition_Starter_Kit_for_Banking-9.4.1.swidtag ]; then
+          cp /swidtag/ibm.com_IBM_Process_Automation_Manager_Open_Edition_Starter_Kit_for_Banking-9.4.1.swidtag /export/;
+          echo 'Updated swidtag file copied to /export';
+          
+          for workflow_dir in /export/*-Automated-Workflow; do
+            if [ -d \"$$workflow_dir\" ]; then
+              cp /swidtag/ibm.com_IBM_Process_Automation_Manager_Open_Edition_Starter_Kit_for_Banking-9.4.1.swidtag \"$$workflow_dir/\";
+              echo \"Copied swidtag to $$(basename \"$$workflow_dir\")\";
+            fi;
+          done;
+        else
+          echo 'WARNING: Updated swidtag file not found at /swidtag/';
+        fi;
+
+        echo 'Copying updated LICENSE files from local workflows to /export...';
+        if [ -d /local-workflows ]; then
+          for workflow_dir in /local-workflows/*-Automated-Workflow; do
+            if [ -d \"$$workflow_dir\" ] && [ -f \"$$workflow_dir/LICENSE\" ]; then
+              workflow_name=$$(basename \"$$workflow_dir\");
+              if [ -d \"/export/$$workflow_name\" ]; then
+                cp \"$$workflow_dir/LICENSE\" \"/export/$$workflow_name/LICENSE\";
+                echo \"Updated LICENSE for $$workflow_name\";
+              fi;
+            fi;
+          done;
+        else
+          echo 'WARNING: Local workflows directory not found at /local-workflows/';
+        fi;
+
         echo 'Export done';
       "
     networks: [bamoe-net]
 
   kafka:
-    image: quay.io/pamoeskb/kafka:latest
+    image: quay.io/pamoeskb/kafka:4.3.0
     container_name: kafka
     ports:
       - "9092:9092"
@@ -137,7 +187,7 @@ services:
       - bamoe-net
 
   mailpit:
-    image: quay.io/pamoeskb/mailpit:latest
+    image: quay.io/pamoeskb/mailpit:v1.30.0
     container_name: mailpit
     ports:
       - "1025:1025"
@@ -145,7 +195,7 @@ services:
     networks: [bamoe-net]
 
   postgres:
-    image: quay.io/pamoeskb/postgres:latest
+    image: quay.io/pamoeskb/postgres:18.4
     container_name: pg-dev
     restart: unless-stopped
     environment:
@@ -165,12 +215,12 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql
     networks:
       - bamoe-net
 
   postgres_init:
-    image: quay.io/pamoeskb/postgres:latest
+    image: quay.io/pamoeskb/postgres:18.4
     container_name: pg-init
     depends_on:
       postgres:
@@ -214,8 +264,7 @@ services:
 
   redis:
     container_name: redis
-    image: quay.io/pamoeskb/redis
-    command: ["redis-server", "--appendonly", "yes"]
+    image: quay.io/pamoeskb/redis:8.8.0-fixed
     ports:
       - "6379:6379"
     volumes:

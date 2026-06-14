@@ -8,4 +8,4 @@ To start the environment, follow the official PAMOE documentation.
 For MCP-related setup and usage, refer to the bamoe-mcp folder included in this release.
 
 **Official documentation:**
-https://ibmdocs-test.dcs.ibm.com/docs/en/pamoeskb/9.3.1
+https://ibmdocs-test.dcs.ibm.com/docs/en/pamoeskb/9.4.1

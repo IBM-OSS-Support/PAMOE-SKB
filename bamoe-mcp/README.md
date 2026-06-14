@@ -16,7 +16,7 @@ To run the BAMOE MCP Web App, you only need:
 3. **Docker and Docker Compose** installed on your machine
 4. **kubectl** configured with access to a Kubernetes cluster with BAMOE deployments
 
-**Note:** Ollama with the granite3.3:8b model is now included in the Docker Compose setup - no manual installation required!
+**Note:** Ollama with the granite4:small-h model is now included in the Docker Compose setup - no manual installation required!
 
 ### Quick Start
 
@@ -31,7 +31,7 @@ Copy-Item .env.example .env
 
 # Edit .env to customize (optional):
 # - PORT (default: 3000)
-# - OLLAMA_MODEL (default: granite3.3:8b)
+# - OLLAMA_MODEL (default: granite4:small-h)
 # - K8S_NAMESPACE (default: local-kie-sandbox-dev-deployments)
 ```
 
@@ -43,7 +43,7 @@ docker-compose up -d
 
 This single command will:
 - Automatically create a Docker-specific kubeconfig at `~/.kube/config.docker` (transforms `127.0.0.1` to `host.docker.internal`)
-- Start the Ollama container with granite3.3:8b model pre-loaded
+- Start the Ollama container with granite4:small-h model pre-loaded
 - Start the BAMOE MCP Web Application
 
 **Note:** The setup preserves your original `~/.kube/config` file untouched.
@@ -68,7 +68,7 @@ docker-compose down
 The distribution setup maintains all the functionality of the original application:
 
 1. **Automatic Setup**: Creates Docker-specific kubeconfig automatically on first run
-2. **Ollama Container**: Provides LLM capabilities with granite3.3:8b model pre-loaded
+2. **Ollama Container**: Provides LLM capabilities with granite4:small-h model pre-loaded
 3. **Web App Container**: Runs the Express server and serves the UI (from pre-built image)
 4. **Dynamic MCP Server Deployment**: The web app automatically deploys MCP server containers on-demand when you select a deployment
 5. **Kubernetes Integration**: Fetches available BAMOE deployments from your cluster
@@ -179,7 +179,7 @@ docker rm $(docker ps -aq --filter "name=bamoe-mcp-server") 2>/dev/null || true
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | Web application port | `3000` |
-| `OLLAMA_MODEL` | Ollama model to use | `granite3.3:8b` |
+| `OLLAMA_MODEL` | Ollama model to use | `granite4:small-h` |
 | `OLLAMA_HOST` | Ollama API endpoint (containerized) | `http://ollama:11434` |
 | `BAMOE_HOST` | BAMOE server host | `host.docker.internal` |
 | `K8S_NAMESPACE` | Kubernetes namespace for BAMOE deployments | `local-kie-sandbox-dev-deployments` |
