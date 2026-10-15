@@ -1,6 +1,6 @@
 services:
   bamoe_canvas:
-    image: quay.io/bamoe/canvas:9.5.0-ibm-0005
+    image: quay.io/bamoe/canvas:9.6.0-ibm-0004
     container_name: bamoe_canvas
     platform: linux/amd64
     ports:
@@ -17,7 +17,7 @@ services:
       - bamoe-net
 
   bamoe_management_console:
-    image: quay.io/bamoe/management-console:9.5.0-ibm-0005
+    image: quay.io/bamoe/management-console:9.6.0-ibm-0004
     container_name: bamoe_management_console
     platform: linux/amd64
     ports: ["9191:8080"]
@@ -26,21 +26,21 @@ services:
     networks: [bamoe-net]
 
   bamoe_cors_proxy:
-    image: quay.io/bamoe/cors-proxy:9.5.0-ibm-0005
+    image: quay.io/bamoe/cors-proxy:9.6.0-ibm-0004
     container_name: bamoe_cors_proxy
     platform: linux/amd64
     ports: ["7081:8080"]
     networks: [bamoe-net]
 
   bamoe_maven_repository:
-    image: quay.io/bamoe/maven-repository:9.5.0-ibm-0005
+    image: quay.io/bamoe/maven-repository:9.6.0-ibm-0004
     container_name: bamoe_maven_repository
     platform: linux/amd64
     ports: ["10099:8080"]
     networks: [bamoe-net]
 
   bamoe_extended_services:
-    image: quay.io/bamoe/extended-services:9.5.0-ibm-0005
+    image: quay.io/bamoe/extended-services:9.6.0-ibm-0004
     environment:
       - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://postgres:5432/pamoeskb
       - QUARKUS_DATASOURCE_USERNAME=postgres
@@ -54,48 +54,28 @@ services:
         condition: service_completed_successfully
 
   workflows:
-    image: quay.io/pamoeskb/automated-workflows:9.4.2
+    image: quay.io/pamoeskb/automated-workflows:9.4.3
     container_name: workflows
+    platform: linux/amd64
     volumes:
-      - ./repos:/export                 # where aggregated workflows + initdb end up
-      - .:/swidtag:ro                   # mount parent directory to access swidtag file
-      - .:/local-workflows:ro           # mount local workflows (source of truth) for copy
+      - ./repos:/export                 # output: repos/ folder created in customer's pwd
     command: >
       sh -c "
         set -e;
-        echo 'Copying automation workflows from LOCAL source to /export (excluding target folders)...';
-        for workflow_dir in /local-workflows/*-Automated-Workflow; do
-          if [ -d \"$$workflow_dir\" ]; then
-            workflow_name=$$(basename \"$$workflow_dir\");
-            echo \"Copying $$workflow_name from local...\";
-            mkdir -p \"/export/$$workflow_name\";
-            for item in \"$$workflow_dir\"/*; do
-              base_item=$$(basename \"$$item\");
-              if [ -e \"$$item\" ] && [ \"$$base_item\" != 'target' ] && [[ \"$$base_item\" != *.swidtag ]] && [[ \"$$base_item\" != *.bak ]]; then
-                cp -R \"$$item\" \"/export/$$workflow_name/\";
-              fi;
-            done;
+        IMAGE_SRC=/automation-workflows;
+
+        echo 'Copying automation workflows from image to /export...';
+        for workflow_dir in \$$IMAGE_SRC/*-Automated-Workflow; do
+          if [ -d \"\$$workflow_dir\" ]; then
+            workflow_name=\$$(basename \"\$$workflow_dir\");
+            echo \"Copying \$$workflow_name from image...\";
+            mkdir -p \"/export/\$$workflow_name\";
+            cp -R \"\$$workflow_dir/\". \"/export/\$$workflow_name/\";
           fi;
         done;
 
-        echo 'Removing any target/ folders that made it into /export at any depth...';
+        echo 'Removing any target/ folders from /export...';
         find /export -depth -type d -name target -exec rm -rf {} + 2>/dev/null || true;
-
-        echo 'Ensuring settings.xml is present in every workflow directory in /export...';
-        for workflow_dir in /export/*-Automated-Workflow; do
-          if [ -d \"$$workflow_dir\" ]; then
-            workflow_name=$$(basename \"$$workflow_dir\");
-            # Prefer per-workflow settings.xml (already copied above), fall back to root PAMOE-SKB/settings.xml
-            if [ ! -f \"$$workflow_dir/settings.xml\" ] && [ -f \"/local-workflows/settings.xml\" ]; then
-              cp \"/local-workflows/settings.xml\" \"$$workflow_dir/settings.xml\";
-              echo \"Copied root settings.xml into $$workflow_name\";
-            elif [ -f \"$$workflow_dir/settings.xml\" ]; then
-              echo \"settings.xml already present in $$workflow_name\";
-            else
-              echo \"WARNING: No settings.xml found for $$workflow_name\";
-            fi;
-          fi;
-        done;
 
         echo 'Updating localhost to host.docker.internal in application.properties files...';
         find /export -name 'application.properties' -type f -exec sed -i 's/localhost:5433/host.docker.internal:5433/g' {} +;
@@ -103,94 +83,43 @@ services:
         find /export -name 'application.properties' -type f -exec sed -i 's/localhost:6379/host.docker.internal:6379/g' {} +;
         find /export -name 'application.properties' -type f -exec sed -i 's/quarkus.mailer.host=localhost/quarkus.mailer.host=host.docker.internal/g' {} +;
 
-        echo 'Cleaning /export/initdb...';
+        echo 'Collecting SQL init scripts into /export/initdb...';
         rm -rf /export/initdb;
         mkdir -p /export/initdb;
-
-        echo 'Copying SQL init scripts from local workflows (including 00_schema.sql, skipping Flyway runtime schema, avoiding duplicates)...';
-        for f in /local-workflows/*-Automated-Workflow/initdb/*.sql; do
-          if [ -f \"$$f\" ]; then
-            base=$$(basename \"$$f\");
-
-            # Skip only the Flyway-managed runtime schema script to avoid conflicts
-            case \"$$base\" in
+        for f in \$$IMAGE_SRC/*-Automated-Workflow/initdb/*.sql; do
+          if [ -f \"\$$f\" ]; then
+            base=\$$(basename \"\$$f\");
+            case \"\$$base\" in
               003_correlation_instances.sql)
-                echo \"Skipping Flyway runtime schema script $$f (managed by BAMOE/Quarkus Flyway)\";
+                echo \"Skipping Flyway runtime schema script \$$f\";
                 continue;
                 ;;
             esac
-
-            # Avoid duplicate filenames from multiple workflows
-            if [ -f \"/export/initdb/$$base\" ]; then
-              echo \"Init script $$base already exists in /export/initdb, skipping $$f\";
+            if [ -f \"/export/initdb/\$$base\" ]; then
+              echo \"Init script \$$base already exists, skipping\";
               continue;
             fi;
-
-            echo \"Copying $$f to /export/initdb/$$base\";
-            cp \"$$f\" \"/export/initdb/$$base\";
-          else
-            echo \"Skipping non-file $$f\";
+            echo \"Copying \$$f to /export/initdb/\$$base\";
+            cp \"\$$f\" \"/export/initdb/\$$base\";
           fi;
         done;
 
-        echo 'Copying extra SQL init scripts from /initdb (host dbinit)...';
-        if [ -d /initdb ]; then
-          for f in /initdb/*.sql; do
-            if [ -f \"$$f\" ]; then
-              base=$$(basename \"$$f\");
-              if [ -f \"/export/initdb/$$base\" ]; then
-                echo \"Extra init script $$base already exists in /export/initdb, skipping $$f\";
-                continue;
-              fi;
-              echo \"Copying extra init script $$f to /export/initdb/$$base\";
-              cp \"$$f\" \"/export/initdb/$$base\";
-            fi;
-          done;
-        fi;
+        echo 'Copying swidtag from image to /export and all workflow directories...';
+        for swidtag in \$$IMAGE_SRC/*.swidtag; do
+          if [ -f \"\$$swidtag\" ]; then
+            cp \"\$$swidtag\" /export/;
+            for workflow_dir in /export/*-Automated-Workflow; do
+              [ -d \"\$$workflow_dir\" ] && cp \"\$$swidtag\" \"\$$workflow_dir/\";
+            done;
+            echo \"Copied swidtag: \$$(basename \"\$$swidtag\")\";
+          fi;
+        done;
 
-        echo 'Copying updated 9.4.1 swidtag file to /export and all workflow directories...';
-        if [ -f /swidtag/ibm.com_IBM_Process_Automation_Manager_Open_Edition_Starter_Kit_for_Banking-9.4.1.swidtag ]; then
-          cp /swidtag/ibm.com_IBM_Process_Automation_Manager_Open_Edition_Starter_Kit_for_Banking-9.4.1.swidtag /export/;
-          echo 'Updated swidtag file copied to /export';
-
-          for workflow_dir in /export/*-Automated-Workflow; do
-            if [ -d \"$$workflow_dir\" ]; then
-              cp /swidtag/ibm.com_IBM_Process_Automation_Manager_Open_Edition_Starter_Kit_for_Banking-9.4.1.swidtag \"$$workflow_dir/\";
-              echo \"Copied swidtag to $$(basename \"$$workflow_dir\")\";
-            fi;
-          done;
-        else
-          echo 'WARNING: Updated swidtag file not found at /swidtag/';
-        fi;
-
-        echo 'Copying updated LICENSE files from local workflows to /export...';
-        if [ -d /local-workflows ]; then
-          for workflow_dir in /local-workflows/*-Automated-Workflow; do
-            if [ -d \"$$workflow_dir\" ] && [ -f \"$$workflow_dir/LICENSE\" ]; then
-              workflow_name=$$(basename \"$$workflow_dir\");
-              if [ -d \"/export/$$workflow_name\" ]; then
-                cp \"$$workflow_dir/LICENSE\" \"/export/$$workflow_name/LICENSE\";
-                echo \"Updated LICENSE for $$workflow_name\";
-              fi;
-            fi;
-          done;
-        else
-          echo 'WARNING: Local workflows directory not found at /local-workflows/';
-        fi;
-
-        echo 'Copying bamoe-mcp folder from local to /export...';
-        if [ -d /local-workflows/bamoe-mcp ]; then
+        echo 'Copying bamoe-mcp from image to /export...';
+        if [ -d \$$IMAGE_SRC/bamoe-mcp ]; then
           rm -rf /export/bamoe-mcp;
-          mkdir -p /export/bamoe-mcp;
-          for item in /local-workflows/bamoe-mcp/*; do
-            base_item=$$(basename \"$$item\");
-            if [ -e \"$$item\" ] && [ \"$$base_item\" != 'target' ] && [[ \"$$base_item\" != *.bak ]]; then
-              cp -R \"$$item\" \"/export/bamoe-mcp/\";
-            fi;
-          done;
-          echo \"bamoe-mcp folder copied to /export/bamoe-mcp\";
-        else
-          echo 'WARNING: /local-workflows/bamoe-mcp not found';
+          cp -R \$$IMAGE_SRC/bamoe-mcp /export/bamoe-mcp;
+          echo 'bamoe-mcp copied to /export/bamoe-mcp';
         fi;
 
         echo 'Export done';
@@ -317,4 +246,3 @@ networks:
 volumes:
   pg_data:
   redis-data:
-  repos:
